@@ -138,6 +138,25 @@ async def health_check():
     """Cloud Run ヘルスチェック用"""
     return {"status": "ok"}
 
+@app.get("/reports")
+async def get_reports():
+    """Firestoreか ら 保 存 済 み レ ポ ー ト 一 覧 を 取 得 """
+    try:
+        # reports コ レ ク シ ョ ン の ド キ ュ メ ン ト を 取 得
+        docs = db.collection("reports").stream()
+        
+        reports_list = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            reports_list.append(data)
+            
+        return {"reports": reports_list}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch reports: {str(e)}"
+        )
 
 @app.post(
     "/upload-report",
