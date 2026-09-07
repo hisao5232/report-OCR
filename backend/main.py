@@ -5,11 +5,20 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, status
 from google.cloud import documentai_v1 as documentai
 from google.cloud import firestore
 from pydantic import BaseModel, Field
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="Handwritten Report OCR Service",
     version="1.0.0",
     description="Document AI Form Parserを使用してPDF報告書を解析しFirestoreに保存するAPI",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 開発時はすべてのオリジンからのアクセスを許可
+    allow_credentials=True,
+    allow_methods=["*"],  # POST, GET, OPTIONS などすべて許可
+    allow_headers=["*"],  # すべてのヘッダーを許可
 )
 
 # ------------------------------------------------------------------------------

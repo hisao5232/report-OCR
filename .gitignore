@@ -1,20 +1,36 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-.venv/
-venv/
-ENV/
+# Node.js / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.vercel
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
 
-# Environment variables
+# Python / FastAPI
+backend/__pycache__/
+backend/*/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.pytest_cache/
+backend/venv/
+backend/.venv/
+backend/env/
+
+# 認証キー・秘密情報・環境変数（重要）
+*.json
+!frontend/package*.json
+!frontend/tsconfig.json
 .env
-.env.local
+.env*.local
+*.pem
+*.key
 
-# Testing & Local files
-*.pdf
-policy.json
-
-# IDE / Editor
+# IDE・エディタ・OS関連
 .vscode/
 .idea/
 *.swp
+*.swo
+.DS_Store
+Thumbs.db
