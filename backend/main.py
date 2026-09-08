@@ -1,136 +1,37 @@
 import os
+import json
 import uuid
-from typing import Any
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
-from google.cloud import documentai_v1 as documentai
-from google.cloud import firestore
-from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
+from google import genai
+from google.genai import types
+from google.cloud import firestore
 
 app = FastAPI(
-    title="Handwritten Report OCR Service",
-    version="1.0.0",
-    description="Document AI Form Parserを使用してPDF報告書を解析しFirestoreに保存するAPI",
+    title="Handwritten Report OCR Service (Gemini Powered)",
+    version="2.0.0",
+    description="Gemini 2.5 Flashを使用してPDF報告書を解析しFirestoreに保存するAPI",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 開発時はすべてのオリジンからのアクセスを許可
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # POST, GET, OPTIONS などすべて許可
-    allow_headers=["*"],  # すべてのヘッダーを許可
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# --- Firestore クライアントの初期化 (ここが必要) ---
-db = firestore.Client()
-
 # ------------------------------------------------------------------------------
-# 環境変数の読み込み & 定数定義
+# 環境変数の読み込み & GCP/Gemini クライアント初期化
 # ------------------------------------------------------------------------------
 PROJECT_ID = os.getenv("GCP_PROJECT_ID")
-# Document AI の Form Parser は通常 'us' または 'eu' のリージョンエンドポイントを使用します
-LOCATION = os.getenv("GCP_LOCATION", "us")
-PROCESSOR_ID = os.getenv("DOCUMENT_AI_PROCESSOR_ID")
-FIRESTORE_COLLECTION = os.getenv(
-    "FIRESTORE_COLLECTION", "handwritten_reports"
-)
-
-# 起動時の必須環境変数チェック
-if not PROJECT_ID or not PROCESSOR_ID:
-    raise RuntimeError(
-        "必須の環境変数（GCP_PROJECT_ID, DOCUMENT_AI_PROCESSOR_ID）が設定されていません。"
-    )
-
-# ------------------------------------------------------------------------------
-# GCP クライアント初期化
-# ------------------------------------------------------------------------------
-# Document AI クライアント（Locationに応じたエンドポイントを設定）
-doc_ai_client_options = {
-    "api_endpoint": f"{LOCATION}-documentai.googleapis.com"
-}
-doc_ai_client = documentai.DocumentProcessorServiceClient(
-    client_options=doc_ai_client_options
-)
+FIRESTORE_COLLECTION = os.getenv("FIRESTORE_COLLECTION", "handwritten_reports")
 
 # Firestore クライアント
-db_client = firestore.Client(project=PROJECT_ID)
+db_client = firestore.Client(project=PROJECT_ID) if PROJECT_ID else firestore.Client()
 
-
-# ------------------------------------------------------------------------------
-# レスポンス用 Pydantic モデル定義
-# ------------------------------------------------------------------------------
-class KeyValuePair(BaseModel):
-    key: str
-    key_confidence: float
-    value: str
-    value_confidence: float
-
-
-class ProcessReportResponse(BaseModel):
-    status: str
-    document_id: str
-    filename: str
-    fields_count: int
-    extracted_data: dict[str, str] = Field(
-        ..., description="Key-Valueのマップ（簡易検索用）"
-    )
-    raw_fields: list[KeyValuePair] = Field(
-        ..., description="信頼度付きの詳細なKey-Valueリスト"
-    )
-
-
-# ------------------------------------------------------------------------------
-# ヘルパー関数: Document AI TextAnchor パース
-# ------------------------------------------------------------------------------
-def get_text_anchor_string(element: Any, full_text: str) -> str:
-    """Document AIのTextAnchor（文字列インデックス範囲）から対応する文字列を復元する"""
-    if (
-        not element
-        or not element.text_anchor
-        or not element.text_anchor.text_segments
-    ):
-        return ""
-
-    text_segments = element.text_anchor.text_segments
-    extracted_string = ""
-
-    for segment in text_segments:
-        start_index = int(segment.start_index) if segment.start_index else 0
-        end_index = int(segment.end_index)
-        extracted_string += full_text[start_index:end_index]
-
-    return extracted_string.strip()
-
-
-def parse_form_fields(
-    document: documentai.Document,
-) -> list[KeyValuePair]:
-    """Document AI のレスポンスから Form Fields (Key-Value) を抽出・整理する"""
-    full_text = document.text
-    parsed_fields: list[KeyValuePair] = []
-
-    for page in document.pages:
-        for field in page.form_fields:
-            # Key の抽出
-            key_text = get_text_anchor_string(field.field_name, full_text)
-            key_confidence = field.field_name.confidence
-
-            # Value の抽出
-            value_text = get_text_anchor_string(field.field_value, full_text)
-            value_confidence = field.field_value.confidence
-
-            # キーが存在する場合のみリストに追加
-            if key_text:
-                parsed_fields.append(
-                    KeyValuePair(
-                        key=key_text,
-                        key_confidence=round(key_confidence, 2),
-                        value=value_text,
-                        value_confidence=round(value_confidence, 2),
-                    )
-                )
-
-    return parsed_fields
+# Gemini API クライアント (環境変数 GEMINI_API_KEY を自動認識)
+gemini_client = genai.Client()
 
 
 # ------------------------------------------------------------------------------
@@ -141,11 +42,11 @@ async def health_check():
     """Cloud Run ヘルスチェック用"""
     return {"status": "ok"}
 
+
 @app.get("/reports")
 async def get_reports():
     """Firestoreから保存済みレポート一覧を取得"""
     try:
-        # FIRESTORE_COLLECTION ("handwritten_reports") と db_client を使用
         docs = db_client.collection(FIRESTORE_COLLECTION).stream()
         
         reports_list = []
@@ -153,7 +54,7 @@ async def get_reports():
             data = doc.to_dict()
             data["id"] = doc.id
             
-            # Timestamp (created_at) や Datetime 型を JSON 変換可能な文字列に変換
+            # Timestamp や Datetime 型を JSON 変換可能な ISO 文字列に変換
             for k, v in list(data.items()):
                 if hasattr(v, "isoformat"):
                     data[k] = v.isoformat()
@@ -162,6 +63,7 @@ async def get_reports():
             
             reports_list.append(data)
             
+        reports_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return {"reports": reports_list}
     except Exception as e:
         raise HTTPException(
@@ -169,14 +71,12 @@ async def get_reports():
             detail=f"Failed to fetch reports: {str(e)}"
         )
 
-# --- 削除用エンドポイントの追加 ---
+
 @app.delete("/reports/{report_id}")
 async def delete_report(report_id: str):
     """指定されたIDのレポートをFirestoreから削除"""
     try:
         doc_ref = db_client.collection(FIRESTORE_COLLECTION).document(report_id)
-        
-        # ドキュメントの存在確認
         doc = doc_ref.get()
         if not doc.exists:
             raise HTTPException(
@@ -194,18 +94,18 @@ async def delete_report(report_id: str):
             detail=f"Failed to delete report: {str(e)}"
         )
 
+
 @app.post(
     "/upload-report",
-    response_model=ProcessReportResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_report(file: UploadFile = File(...)):
-    """PDF報告書を受け取り、Document AIでOCR解析後、結果をFirestoreに保存する"""
+    """PDF報告書を受け取り、Gemini 2.5 Flashで高度OCR解析後、結果をFirestoreに保存する"""
     # 1. ファイル形式チェック
-    if not file.filename.endswith(".pdf"):
+    if not file.filename.endswith(".pdf") and not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="PDF形式のファイルのみ対応しています。",
+            detail="PDFまたは画像形式のファイルのみ対応しています。",
         )
 
     try:
@@ -216,49 +116,61 @@ async def upload_report(file: UploadFile = File(...)):
             detail=f"ファイルの読み込みに失敗しました: {str(e)}",
         )
 
-    # 2. Document AI API の呼び出し
+    # 2. Gemini 2.5 Flash API の呼び出し
     try:
-        processor_path = doc_ai_client.processor_path(
-            PROJECT_ID, LOCATION, PROCESSOR_ID
-        )
-        raw_document = documentai.RawDocument(
-            content=pdf_content, mime_type="application/pdf"
-        )
-        request = documentai.ProcessRequest(
-            name=processor_path, raw_document=raw_document
+        prompt = """
+        添付された建設機械の修理報告書/日報から、手書き文字を含めて以下の項目を正確に読み取り、指定のJSONフォーマットで返してください。
+
+        【抽出項目】
+        - 日報No (例: A-101160)
+        - 得意先 (例: 長嶋工業)
+        - 機械名 (例: RX306)
+        - 管理番号
+        - アワーメーター
+        - 修理担当 (例: 重松)
+        - 修理内容 (例: 特定自主点検)
+        - 請求金額
+        - 使用部品 (品名、個数、仕入区分、金額などのリスト)
+
+        【注意事項】
+        - 略称や崩し文字（例: 「特自ン」→「特定自主点検」）は、文脈から正しい表記に補正して読み取ってください。
+        - 該当する記載がない項目は null または空文字にしてください。
+        """
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_bytes(
+                    data=pdf_content,
+                    mime_type=file.content_type or "application/pdf",
+                ),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+            ),
         )
 
-        result = doc_ai_client.process_document(request=request)
+        extracted_data = json.loads(response.text)
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Document AI による解析中にエラーが発生しました: {str(e)}",
+            detail=f"Geminiによる解析中にエラーが発生しました: {str(e)}",
         )
 
-    # 3. Key-Value データの抽出・整形
-    raw_fields = parse_form_fields(result.document)
-
-    # アプリ側で使いやすいフラットな Key-Value 辞書（Map）も作成
-    extracted_map: dict[str, str] = {
-        item.key: item.value for item in raw_fields
-    }
-
-    # 4. Firestore 保存用ドキュメントデータの作成
+    # 3. Firestore 保存用ドキュメントデータの作成
     document_id = str(uuid.uuid4())
     firestore_payload = {
         "document_id": document_id,
         "filename": file.filename,
         "created_at": firestore.SERVER_TIMESTAMP,
-        "extracted_data": extracted_map,
-        "raw_fields": [field.model_dump() for field in raw_fields],
-        "full_text": result.document.text,  # 全文OCR結果も検索用に保持
+        "extracted_data": extracted_data,
     }
 
-    # 5. Firestore への非同期/同期保存
+    # 4. Firestore への保存
     try:
-        doc_ref = db_client.collection(FIRESTORE_COLLECTION).document(
-            document_id
-        )
+        doc_ref = db_client.collection(FIRESTORE_COLLECTION).document(document_id)
         doc_ref.set(firestore_payload)
     except Exception as e:
         raise HTTPException(
@@ -266,13 +178,11 @@ async def upload_report(file: UploadFile = File(...)):
             detail=f"Firestore へのデータ保存に失敗しました: {str(e)}",
         )
 
-    # 6. レスポンス返却
-    return ProcessReportResponse(
-        status="success",
-        document_id=document_id,
-        filename=file.filename,
-        fields_count=len(raw_fields),
-        extracted_data=extracted_map,
-        raw_fields=raw_fields,
-    )
-
+    # 5. レスポンス返却
+    return {
+        "status": "success",
+        "document_id": document_id,
+        "filename": file.filename,
+        "extracted_data": extracted_data,
+    }
+    
