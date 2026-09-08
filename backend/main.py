@@ -21,6 +21,9 @@ app.add_middleware(
     allow_headers=["*"],  # すべてのヘッダーを許可
 )
 
+# --- Firestore クライアントの初期化 (ここが必要) ---
+db = firestore.Client()
+
 # ------------------------------------------------------------------------------
 # 環境変数の読み込み & 定数定義
 # ------------------------------------------------------------------------------
@@ -140,15 +143,23 @@ async def health_check():
 
 @app.get("/reports")
 async def get_reports():
-    """Firestoreか ら 保 存 済 み レ ポ ー ト 一 覧 を 取 得 """
+    """Firestoreから保存済みレポート一覧を取得"""
     try:
-        # reports コ レ ク シ ョ ン の ド キ ュ メ ン ト を 取 得
-        docs = db.collection("reports").stream()
+        # FIRESTORE_COLLECTION ("handwritten_reports") と db_client を使用
+        docs = db_client.collection(FIRESTORE_COLLECTION).stream()
         
         reports_list = []
         for doc in docs:
             data = doc.to_dict()
             data["id"] = doc.id
+            
+            # Timestamp (created_at) や Datetime 型を JSON 変換可能な文字列に変換
+            for k, v in list(data.items()):
+                if hasattr(v, "isoformat"):
+                    data[k] = v.isoformat()
+                elif hasattr(v, "to_datetime"):
+                    data[k] = v.to_datetime().isoformat()
+            
             reports_list.append(data)
             
         return {"reports": reports_list}
@@ -156,6 +167,31 @@ async def get_reports():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch reports: {str(e)}"
+        )
+
+# --- 削除用エンドポイントの追加 ---
+@app.delete("/reports/{report_id}")
+async def delete_report(report_id: str):
+    """指定されたIDのレポートをFirestoreから削除"""
+    try:
+        doc_ref = db_client.collection(FIRESTORE_COLLECTION).document(report_id)
+        
+        # ドキュメントの存在確認
+        doc = doc_ref.get()
+        if not doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="指定されたレポートが見つかりません。"
+            )
+            
+        doc_ref.delete()
+        return {"status": "success", "message": f"Report {report_id} deleted."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete report: {str(e)}"
         )
 
 @app.post(

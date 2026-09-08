@@ -17,33 +17,67 @@ export default function ReportsPage() {
   const [reports, setReports] = useState<ReportItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  async function fetchReports() {
+    setLoading(true);
+    setErrorDetail(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/reports`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || `サーバーエラー (ステータス: ${res.status})`
+        );
+      }
+      const data = await res.json();
+      setReports(data.reports || []);
+    } catch (err) {
+      if (err instanceof Error) {
+        setErrorDetail(err.message);
+      } else {
+        setErrorDetail("データの取得中に不明なエラーが発生しました。");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    async function fetchReports() {
-      try {
-        const res = await fetch(`${BACKEND_URL}/reports`);
-        
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          throw new Error(
-            errorData.detail || `サーバーエラー (ステータス: ${res.status})`
-          );
-        }
-
-        const data = await res.json();
-        setReports(data.reports || []);
-      } catch (err) {
-        if (err instanceof Error) {
-          setErrorDetail(err.message);
-        } else {
-          setErrorDetail("データの取得中に不明なエラーが発生しました。");
-        }
-      } finally {
-        setLoading(false);
-      }
-    }
     fetchReports();
   }, []);
+
+  // 削除処理の関数
+  async function handleDelete(id: string, filename?: string) {
+    const confirmMessage = filename
+      ? `「${filename}」を削除してもよろしいですか？`
+      : "このデータを削除してもよろしいですか？";
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setDeletingId(id);
+    try {
+      const res = await fetch(`${BACKEND_URL}/reports/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || `削除に失敗しました (ステータス: ${res.status})`
+        );
+      }
+
+      // ローカルのステートから削除した要素を除外
+      setReports((prev) => prev.filter((item) => item.id !== id));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "削除中にエラーが発生しました。");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   return (
     <main className="max-w-4xl mx-auto p-8 min-h-screen bg-slate-50">
@@ -79,15 +113,27 @@ export default function ReportsPage() {
       {!loading && !errorDetail && reports.length > 0 && (
         <div className="space-y-4">
           {reports.map((item) => (
-            <div key={item.id} className="border rounded-lg p-4 bg-white shadow-sm space-y-2">
+            <div key={item.id} className="border rounded-lg p-4 bg-white shadow-sm space-y-3">
               <div className="flex justify-between items-center border-b pb-2">
-                <span className="font-semibold text-slate-800">
-                  {item.filename || "名称未設定"}
-                </span>
-                <span className="text-xs font-mono text-slate-400">ID: {item.id}</span>
+                <div>
+                  <span className="font-semibold text-slate-800 text-lg">
+                    {item.filename || "名称未設定"}
+                  </span>
+                  <span className="ml-3 text-xs font-mono text-slate-400">ID: {item.id}</span>
+                </div>
+                
+                {/* 削除ボタン */}
+                <button
+                  onClick={() => handleDelete(item.id, item.filename)}
+                  disabled={deletingId === item.id}
+                  className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded transition-colors disabled:opacity-50"
+                >
+                  {deletingId === item.id ? "削除中..." : "削除"}
+                </button>
               </div>
-              
-              <pre className="bg-slate-50 p-3 rounded text-xs font-mono text-slate-700 overflow-x-auto">
+
+              {/* 生データのJSON表示 */}
+              <pre className="bg-slate-50 p-3 rounded text-xs font-mono text-slate-700 overflow-x-auto max-h-60">
                 {JSON.stringify(item, null, 2)}
               </pre>
             </div>
