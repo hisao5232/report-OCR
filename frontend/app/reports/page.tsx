@@ -38,7 +38,7 @@ export default function ReportsPage() {
         } else {
           setErrorDetail("データの取得中に不明なエラーが発生しました。");
         }
-      } font-medium
+      } finally {
         setLoading(false);
       }
     }
@@ -87,7 +87,6 @@ export default function ReportsPage() {
                 <span className="text-xs font-mono text-slate-400">ID: {item.id}</span>
               </div>
               
-              {/* デバッグ用に生データをJSONプレビュー表示 */}
               <pre className="bg-slate-50 p-3 rounded text-xs font-mono text-slate-700 overflow-x-auto">
                 {JSON.stringify(item, null, 2)}
               </pre>
