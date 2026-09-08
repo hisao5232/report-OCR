@@ -6,14 +6,8 @@ interface OcrResponse {
   status: string;
   document_id: string;
   filename: string;
-  fields_count: number;
-  extracted_data: Record<string, string>;
-  raw_fields: Array<{
-    key: string;
-    key_confidence: number;
-    value: string;
-    value_confidence: number;
-  }>;
+  fields_count?: number;
+  extracted_data: Record<string, unknown>;
 }
 
 export default function Home() {
@@ -40,7 +34,6 @@ export default function Home() {
     formData.append("file", file);
 
     try {
-      // Cloud Run の バ ッ ク エ ン ド URLを 指 定
       const response = await fetch(
         "https://ocr-backend-288651941478.asia-northeast1.run.app/upload-report",
         {
@@ -50,7 +43,7 @@ export default function Home() {
       );
 
       if (!response.ok) {
-        throw new Error(`サ ー バ ー エ ラ ー : ${response.status}`);
+        throw new Error(`サーバーエラー: ${response.status}`);
       }
 
       const data: OcrResponse = await response.json();
@@ -59,7 +52,7 @@ export default function Home() {
       if (err instanceof Error) {
         setError(err.message);
       } else {
-        setError("ア ッ プ ロ ー ド に 失 敗 し ま し た 。 ");
+        setError("アップロードに失敗しました。");
       }
     } finally {
       setLoading(false);
@@ -67,56 +60,74 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen bg-slate-50 p-8">
+    <main className="min-h-screen bg-slate-50 p-6 md:p-8">
       <div className="max-w-4xl mx-auto space-y-6">
-        {/* ヘ ッ ダ ー 部分: タイトルと一覧ページへのリンク */}
-        <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-slate-800">
-            手 書 き レ ポ ー ト  OCR 解 析
-          </h1>
-          <Link
-            href="/reports"
-            className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-medium rounded-md transition-colors"
-          >
-            保 存 済 み 一 覧 を 見 る →
-          </Link>
+        {/* ヘッダー部分 */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-lg shadow-sm border border-slate-200">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800">
+              手書きレポート OCR解析
+            </h1>
+            <p className="text-sm text-slate-500 mt-1">
+              Gemini 2.5 Flash を使用した高精度レポート解析システム
+            </p>
+          </div>
+          
+          {/* ナビゲーションボタンエリア */}
+          <div className="flex items-center gap-2">
+            <Link
+              href="/search"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors shadow-sm flex items-center gap-1.5"
+            >
+              🔍 データベース検索
+            </Link>
+            <Link
+              href="/reports"
+              className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-md transition-colors border border-slate-200"
+            >
+              保存済み一覧 →
+            </Link>
+          </div>
         </div>
 
-        {/* フ ァ イ ル 選 択 フ ォ ー ム  */}
-        <form onSubmit={handleSubmit} className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 space-y-4">
+        {/* ファイル選択フォーム */}
+        <form
+          onSubmit={handleSubmit}
+          className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 space-y-4"
+        >
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              解 析 す る PDFフ ァ イ ル を 選 択
+              解析する PDF または画像ファイルを選択
             </label>
             <input
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,image/*"
               onChange={handleFileChange}
-              className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+              className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
             />
           </div>
           <button
             type="submit"
             disabled={!file || loading}
-            className="px-4 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
+            className="w-full sm:w-auto px-6 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-slate-300 transition-colors shadow-sm"
           >
-            {loading ? "解 析 中  (Document AI)..." : "ア ッ プ ロ ー ド し て 解 析 "}
+            {loading ? "解析中 (Gemini)..." : "アップロードして解析"}
           </button>
         </form>
 
-        {/* エ ラ ー 表 示  */}
+        {/* エラー表示 */}
         {error && (
-          <div className="p-4 bg-red-50 text-red-700 rounded-md border border-red-200">
+          <div className="p-4 bg-red-50 text-red-700 rounded-md border border-red-200 font-medium">
             {error}
           </div>
         )}
 
-        {/* 抽 出 結 果 表 示  */}
+        {/* 抽出結果表示 */}
         {result && (
           <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 space-y-4">
             <div className="flex justify-between items-center border-b pb-3">
               <h2 className="text-lg font-semibold text-slate-800">
-                解 析 結 果  ({result.fields_count} 件 検 出 )
+                解析結果
               </h2>
               <span className="text-xs text-slate-400 font-mono">
                 ID: {result.document_id}
@@ -124,10 +135,15 @@ export default function Home() {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {Object.entries(result.extracted_data).map(([key, value]) => (
-                <div key={key} className="p-3 bg-slate-50 rounded border border-slate-100">
+                <div
+                  key={key}
+                  className="p-3 bg-slate-50 rounded border border-slate-100"
+                >
                   <div className="text-xs font-bold text-slate-500">{key}</div>
                   <div className="text-sm font-medium text-slate-800 mt-1 whitespace-pre-wrap">
-                    {value}
+                    {typeof value === "object"
+                      ? JSON.stringify(value, null, 2)
+                      : String(value ?? "-")}
                   </div>
                 </div>
               ))}
@@ -138,4 +154,3 @@ export default function Home() {
     </main>
   );
 }
-
