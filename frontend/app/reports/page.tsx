@@ -8,6 +8,7 @@ interface ReportItem {
   filename?: string;
   created_at?: string;
   extracted_data?: Record<string, string>;
+  raw_text?: string;
   [key: string]: unknown;
 }
 
@@ -18,6 +19,12 @@ export default function ReportsPage() {
   const [loading, setLoading] = useState(true);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // モーダル・編集状態用
+  const [editingReport, setEditingReport] = useState<ReportItem | null>(null);
+  const [jsonInput, setJsonInput] = useState<string>("");
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
 
   async function fetchReports() {
     setLoading(true);
@@ -47,7 +54,7 @@ export default function ReportsPage() {
     fetchReports();
   }, []);
 
-  // 削除処理の関数
+  // 削除処理
   async function handleDelete(id: string, filename?: string) {
     const confirmMessage = filename
       ? `「${filename}」を削除してもよろしいですか？`
@@ -70,12 +77,86 @@ export default function ReportsPage() {
         );
       }
 
-      // ローカルのステートから削除した要素を除外
       setReports((prev) => prev.filter((item) => item.id !== id));
     } catch (err) {
       alert(err instanceof Error ? err.message : "削除中にエラーが発生しました。");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  // 編集モーダルを開く
+  function openEditModal(report: ReportItem) {
+    setEditingReport(report);
+    // extracted_data のみを編集対象テキストとして初期化
+    const initialData = report.extracted_data || {};
+    setJsonInput(JSON.stringify(initialData, null, 2));
+    setJsonError(null);
+  }
+
+  // 編集モーダルを閉じる
+  function closeEditModal() {
+    setEditingReport(null);
+    setJsonInput("");
+    setJsonError(null);
+  }
+
+  // 更新処理
+  async function handleUpdate() {
+    if (!editingReport) return;
+
+    setJsonError(null);
+
+    // JSON構文の検証
+    let parsedData: Record<string, string>;
+    try {
+      parsedData = JSON.parse(jsonInput);
+      if (typeof parsedData !== "object" || parsedData === null || Array.isArray(parsedData)) {
+        throw new Error("JSONオブジェクト形式で入力してください。");
+      }
+    } catch (err) {
+      setJsonError(
+        err instanceof Error ? `JSON形式が無効です: ${err.message}` : "JSON形式が無効です。"
+      );
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/reports/${editingReport.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          extracted_data: parsedData,
+          raw_text: editingReport.raw_text ?? null,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          errorData.detail || `更新に失敗しました (ステータス: ${res.status})`
+        );
+      }
+
+      // ローカルのステートを更新
+      setReports((prev) =>
+        prev.map((item) =>
+          item.id === editingReport.id
+            ? { ...item, extracted_data: parsedData }
+            : item
+        )
+      );
+
+      closeEditModal();
+    } catch (err) {
+      setJsonError(
+        err instanceof Error ? err.message : "更新中にエラーが発生しました。"
+      );
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -121,15 +202,26 @@ export default function ReportsPage() {
                   </span>
                   <span className="ml-3 text-xs font-mono text-slate-400">ID: {item.id}</span>
                 </div>
-                
-                {/* 削除ボタン */}
-                <button
-                  onClick={() => handleDelete(item.id, item.filename)}
-                  disabled={deletingId === item.id}
-                  className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded transition-colors disabled:opacity-50"
-                >
-                  {deletingId === item.id ? "削除中..." : "削除"}
-                </button>
+
+                {/* ボタンエリア */}
+                <div className="flex items-center space-x-2">
+                  {/* 編集ボタン */}
+                  <button
+                    onClick={() => openEditModal(item)}
+                    className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 text-xs font-medium rounded transition-colors"
+                  >
+                    編集
+                  </button>
+
+                  {/* 削除ボタン */}
+                  <button
+                    onClick={() => handleDelete(item.id, item.filename)}
+                    disabled={deletingId === item.id}
+                    className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-medium rounded transition-colors disabled:opacity-50"
+                  >
+                    {deletingId === item.id ? "削除中..." : "削除"}
+                  </button>
+                </div>
               </div>
 
               {/* 生データのJSON表示 */}
@@ -140,7 +232,65 @@ export default function ReportsPage() {
           ))}
         </div>
       )}
+
+      {/* 編集モーダル */}
+      {editingReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* モーダルヘッダー */}
+            <div className="px-6 py-4 border-b flex justify-between items-center bg-slate-50">
+              <h2 className="text-lg font-bold text-slate-800">
+                JSONデータの編集 ({editingReport.filename || editingReport.id})
+              </h2>
+              <button
+                onClick={closeEditModal}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xl leading-none"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* モーダルボディ */}
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              <p className="text-xs text-slate-500">
+                抽出データ（<code className="font-mono">extracted_data</code>）のキーと値をJSON形式で編集してください。
+              </p>
+
+              {jsonError && (
+                <div className="p-3 bg-red-50 text-red-700 rounded text-xs border border-red-200">
+                  {jsonError}
+                </div>
+              )}
+
+              <textarea
+                value={jsonInput}
+                onChange={(e) => setJsonInput(e.target.value)}
+                rows={12}
+                className="w-full font-mono text-xs p-3 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-900 text-slate-100"
+                spellCheck={false}
+              />
+            </div>
+
+            {/* モーダルフッター */}
+            <div className="px-6 py-4 border-t bg-slate-50 flex justify-end space-x-3">
+              <button
+                onClick={closeEditModal}
+                disabled={isSaving}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 text-sm font-medium rounded-md transition-colors disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={handleUpdate}
+                disabled={isSaving}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-50"
+              >
+                {isSaving ? "保存中..." : "保存する"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
-
