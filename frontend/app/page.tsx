@@ -2,18 +2,17 @@
 import { useState } from "react";
 import Link from "next/link";
 
-interface OcrResponse {
+interface OcrAcceptedResponse {
   status: string;
   document_id: string;
   filename: string;
-  fields_count?: number;
-  extracted_data: Record<string, unknown>;
+  message: string;
 }
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<OcrResponse | null>(null);
+  const [result, setResult] = useState<OcrAcceptedResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -46,8 +45,9 @@ export default function Home() {
         throw new Error(`サーバーエラー: ${response.status}`);
       }
 
-      const data: OcrResponse = await response.json();
+      const data: OcrAcceptedResponse = await response.json();
       setResult(data);
+      setFile(null); // ファイル選択をリセット
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);
@@ -72,8 +72,7 @@ export default function Home() {
               Gemini 2.5 Flash を使用した高精度レポート解析システム
             </p>
           </div>
-          
-          {/* ナビゲーションボタンエリア */}
+
           <div className="flex items-center gap-2">
             <Link
               href="/search"
@@ -111,7 +110,7 @@ export default function Home() {
             disabled={!file || loading}
             className="w-full sm:w-auto px-6 py-2.5 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 disabled:bg-slate-300 transition-colors shadow-sm"
           >
-            {loading ? "解析中 (Gemini)..." : "アップロードして解析"}
+            {loading ? "送信中..." : "ファイルをアップロードして解析開始"}
           </button>
         </form>
 
@@ -122,31 +121,26 @@ export default function Home() {
           </div>
         )}
 
-        {/* 抽出結果表示 */}
+        {/* 受付完了メッセージ */}
         {result && (
-          <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200 space-y-4">
-            <div className="flex justify-between items-center border-b pb-3">
-              <h2 className="text-lg font-semibold text-slate-800">
-                解析結果
-              </h2>
-              <span className="text-xs text-slate-400 font-mono">
-                ID: {result.document_id}
-              </span>
+          <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-lg space-y-4 text-emerald-900">
+            <div className="flex items-center gap-2 font-bold text-lg text-emerald-800">
+              <span>✅</span>
+              <span>アップロードを受け付けました</span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {Object.entries(result.extracted_data).map(([key, value]) => (
-                <div
-                  key={key}
-                  className="p-3 bg-slate-50 rounded border border-slate-100"
-                >
-                  <div className="text-xs font-bold text-slate-500">{key}</div>
-                  <div className="text-sm font-medium text-slate-800 mt-1 whitespace-pre-wrap">
-                    {typeof value === "object"
-                      ? JSON.stringify(value, null, 2)
-                      : String(value ?? "-")}
-                  </div>
-                </div>
-              ))}
+            <p className="text-sm">
+              ファイル「<strong>{result.filename}</strong>」の解析をバックグラウンドで開始しました。
+            </p>
+            <div className="pt-2 flex items-center justify-between border-t border-emerald-200">
+              <span className="text-xs font-mono text-emerald-700">
+                ドキュメントID: {result.document_id}
+              </span>
+              <Link
+                href="/reports"
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-md transition-colors shadow-sm"
+              >
+                保存済み一覧で進捗を確認する →
+              </Link>
             </div>
           </div>
         )}

@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 
 interface ReportItem {
   id: string;
   filename?: string;
+  status?: "processing" | "completed" | "failed";
   created_at?: string;
-  extracted_data?: Record<string, string>;
+  extracted_data?: Record<string, unknown>;
+  error_message?: string;
   raw_text?: string;
   [key: string]: unknown;
 }
@@ -26,8 +28,8 @@ export default function ReportsPage() {
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  async function fetchReports() {
-    setLoading(true);
+  const fetchReports = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
     setErrorDetail(null);
     try {
       const res = await fetch(`${BACKEND_URL}/reports`);
@@ -46,13 +48,25 @@ export default function ReportsPage() {
         setErrorDetail("データの取得中に不明なエラーが発生しました。");
       }
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     fetchReports();
-  }, []);
+  }, [fetchReports]);
+
+  // processing 状態のアイテムがある場合は5秒ごとにポーリング
+  useEffect(() => {
+    const hasProcessing = reports.some((r) => r.status === "processing");
+    if (!hasProcessing) return;
+
+    const interval = setInterval(() => {
+      fetchReports(true); // バックグラウンドで静かに再取得
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [reports, fetchReports]);
 
   // 削除処理
   async function handleDelete(id: string, filename?: string) {
@@ -60,9 +74,7 @@ export default function ReportsPage() {
       ? `「${filename}」を削除してもよろしいですか？`
       : "このデータを削除してもよろしいですか？";
 
-    if (!window.confirm(confirmMessage)) {
-      return;
-    }
+    if (!window.confirm(confirmMessage)) return;
 
     setDeletingId(id);
     try {
@@ -88,7 +100,6 @@ export default function ReportsPage() {
   // 編集モーダルを開く
   function openEditModal(report: ReportItem) {
     setEditingReport(report);
-    // extracted_data のみを編集対象テキストとして初期化
     const initialData = report.extracted_data || {};
     setJsonInput(JSON.stringify(initialData, null, 2));
     setJsonError(null);
@@ -104,11 +115,9 @@ export default function ReportsPage() {
   // 更新処理
   async function handleUpdate() {
     if (!editingReport) return;
-
     setJsonError(null);
 
-    // JSON構文の検証
-    let parsedData: Record<string, string>;
+    let parsedData: Record<string, unknown>;
     try {
       parsedData = JSON.parse(jsonInput);
       if (typeof parsedData !== "object" || parsedData === null || Array.isArray(parsedData)) {
@@ -125,9 +134,7 @@ export default function ReportsPage() {
     try {
       const res = await fetch(`${BACKEND_URL}/reports/${editingReport.id}`, {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           extracted_data: parsedData,
           raw_text: editingReport.raw_text ?? null,
@@ -141,7 +148,6 @@ export default function ReportsPage() {
         );
       }
 
-      // ローカルのステートを更新
       setReports((prev) =>
         prev.map((item) =>
           item.id === editingReport.id
@@ -159,6 +165,31 @@ export default function ReportsPage() {
       setIsSaving(false);
     }
   }
+
+  // ステータス表示バッジの描画
+  const renderStatusBadge = (status?: string) => {
+    switch (status) {
+      case "processing":
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-100 text-amber-800 animate-pulse">
+            🟡 解析中...
+          </span>
+        );
+      case "failed":
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-800">
+            🔴 解析失敗
+          </span>
+        );
+      case "completed":
+      default:
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
+            🟢 解析完了
+          </span>
+        );
+    }
+  };
 
   return (
     <main className="max-w-4xl mx-auto p-8 min-h-screen bg-slate-50">
@@ -196,24 +227,22 @@ export default function ReportsPage() {
           {reports.map((item) => (
             <div key={item.id} className="border rounded-lg p-4 bg-white shadow-sm space-y-3">
               <div className="flex justify-between items-center border-b pb-2">
-                <div>
+                <div className="flex items-center gap-3">
                   <span className="font-semibold text-slate-800 text-lg">
                     {item.filename || "名称未設定"}
                   </span>
-                  <span className="ml-3 text-xs font-mono text-slate-400">ID: {item.id}</span>
+                  {renderStatusBadge(item.status)}
+                  <span className="text-xs font-mono text-slate-400">ID: {item.id}</span>
                 </div>
 
-                {/* ボタンエリア */}
                 <div className="flex items-center space-x-2">
-                  {/* 編集ボタン */}
                   <button
                     onClick={() => openEditModal(item)}
-                    className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 text-xs font-medium rounded transition-colors"
+                    disabled={item.status === "processing"}
+                    className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 text-xs font-medium rounded transition-colors disabled:opacity-50"
                   >
                     編集
                   </button>
-
-                  {/* 削除ボタン */}
                   <button
                     onClick={() => handleDelete(item.id, item.filename)}
                     disabled={deletingId === item.id}
@@ -224,10 +253,31 @@ export default function ReportsPage() {
                 </div>
               </div>
 
-              {/* 生データのJSON表示 */}
-              <pre className="bg-slate-50 p-3 rounded text-xs font-mono text-slate-700 overflow-x-auto max-h-60">
-                {JSON.stringify(item, null, 2)}
-              </pre>
+              {/* ステータスに応じた本文表示 */}
+              {item.status === "processing" && (
+                <div className="p-4 bg-amber-50 text-amber-800 rounded text-sm flex items-center gap-2">
+                  <svg className="animate-spin h-4 w-4 text-amber-600" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  <span>Geminiで解析処理を実行中です。完了するまで自動で更新を監視します...</span>
+                </div>
+              )}
+
+              {item.status === "failed" && (
+                <div className="p-4 bg-red-50 text-red-800 rounded text-sm space-y-1">
+                  <p className="font-bold">解析中にエラーが発生しました。</p>
+                  {item.error_message && (
+                    <p className="font-mono text-xs text-red-600">{item.error_message}</p>
+                  )}
+                </div>
+              )}
+
+              {(item.status === "completed" || !item.status) && (
+                <pre className="bg-slate-50 p-3 rounded text-xs font-mono text-slate-700 overflow-x-auto max-h-60">
+                  {JSON.stringify(item, null, 2)}
+                </pre>
+              )}
             </div>
           ))}
         </div>
@@ -237,7 +287,6 @@ export default function ReportsPage() {
       {editingReport && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            {/* モーダルヘッダー */}
             <div className="px-6 py-4 border-b flex justify-between items-center bg-slate-50">
               <h2 className="text-lg font-bold text-slate-800">
                 JSONデータの編集 ({editingReport.filename || editingReport.id})
@@ -250,7 +299,6 @@ export default function ReportsPage() {
               </button>
             </div>
 
-            {/* モーダルボディ */}
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
               <p className="text-xs text-slate-500">
                 抽出データ（<code className="font-mono">extracted_data</code>）のキーと値をJSON形式で編集してください。
@@ -271,7 +319,6 @@ export default function ReportsPage() {
               />
             </div>
 
-            {/* モーダルフッター */}
             <div className="px-6 py-4 border-t bg-slate-50 flex justify-end space-x-3">
               <button
                 onClick={closeEditModal}
