@@ -31,13 +31,13 @@ def _is_model_unavailable_error(e: Exception) -> bool:
     404 (NOT_FOUND) など「そのモデル自体が使えない」エラーかどうかを判定する。
     混雑(429/5xx)など一時的なエラーとは区別する。
     """
-    status_code = getattr(e, "status_code", None)
+    status_code = getattr(e, "code", None) or getattr(e, "status_code", None)
+    err_msg = str(e).upper()
     if status_code == 404:
         return True
-    if "NOT_FOUND" in str(e):
+    if "NOT_FOUND" in err_msg or "NO LONGER AVAILABLE" in err_msg:
         return True
     return False
-
 
 async def analyze_report_image(file_content: bytes, content_type: str) -> dict:
     if not gemini_client:
