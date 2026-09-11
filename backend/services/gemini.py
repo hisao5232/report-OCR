@@ -11,8 +11,33 @@ except Exception as e:
     print(f"Gemini Client Init Error: {e}")
     gemini_client = None
 
+
 def get_gemini_client():
     return gemini_client
+
+
+# 新しい世代から順に試す候補リスト。
+# live / preview / image / audio 系は画像解析用途には使わない想定なので入れない。
+CANDIDATE_MODELS = [
+    GEMINI_MODEL,          # config.py の設定値を最優先
+    "gemini-3.6-flash",
+    "gemini-3.1-flash",
+    "gemini-3-flash",
+]
+
+
+def _is_model_unavailable_error(e: Exception) -> bool:
+    """
+    404 (NOT_FOUND) など「そのモデル自体が使えない」エラーかどうかを判定する。
+    混雑(429/5xx)など一時的なエラーとは区別する。
+    """
+    status_code = getattr(e, "status_code", None)
+    if status_code == 404:
+        return True
+    if "NOT_FOUND" in str(e):
+        return True
+    return False
+
 
 async def analyze_report_image(file_content: bytes, content_type: str) -> dict:
     if not gemini_client:
@@ -65,22 +90,46 @@ async def analyze_report_image(file_content: bytes, content_type: str) -> dict:
         mime_type=content_type if content_type else "application/pdf",
     )
 
+    # GEMINI_MODEL が候補リストに重複して入っている場合の重複除去（順序は保持）
+    candidate_models = list(dict.fromkeys(CANDIDATE_MODELS))
+
     max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            print(f"Gemini API 呼び出し中 (モデル: {GEMINI_MODEL})...")
-            response = gemini_client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[part_file, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                ),
-            )
-            return json.loads(response.text)
-        except (errors.ServerError, errors.APIError) as e:
-            if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2
-                print(f"Gemini API 混雑等のため {wait_time} 秒後に再試行します... ({attempt + 1}/{max_retries})")
-                await asyncio.sleep(wait_time)
-            else:
+    last_error: Exception | None = None
+
+    for model_name in candidate_models:
+        for attempt in range(max_retries):
+            try:
+                print(f"Gemini API 呼び出し中 (モデル: {model_name})...")
+                response = gemini_client.models.generate_content(
+                    model=model_name,
+                    contents=[part_file, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                    ),
+                )
+                # 成功したらそのまま結果を返す（以降の候補モデルは試さない）
+                return json.loads(response.text)
+
+            except errors.ClientError as e:
+                if _is_model_unavailable_error(e):
+                    # モデル自体が使えない → リトライせず次の候補モデルへ切り替え
+                    print(f"[Gemini] '{model_name}' は利用不可のため次のモデルへ切り替えます。({e})")
+                    last_error = e
+                    break  # 内側のリトライループを抜けて次の model_name へ
+                # 404以外のClientError（例: 400系のリクエスト不正）はそのまま投げる
                 raise e
+
+            except (errors.ServerError, errors.APIError) as e:
+                # 混雑・一時的な障害等は同じモデルでリトライ
+                last_error = e
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"Gemini API 混雑等のため {wait_time} 秒後に再試行します... ({attempt + 1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"[Gemini] '{model_name}' はリトライ上限に達したため次のモデルへ切り替えます。")
+                    break  # このモデルは断念し、次の候補モデルへ
+
+    # すべての候補モデルで失敗した場合
+    raise last_error or RuntimeError("すべてのモデル候補で失敗しました。")
+

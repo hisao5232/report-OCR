@@ -12,7 +12,6 @@ from services.gemini import analyze_report_image
 
 router = APIRouter()
 
-
 @router.get("/reports")
 async def get_reports():
     try:
@@ -24,7 +23,6 @@ async def get_reports():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch reports: {str(e)}"
         )
-
 
 @router.delete("/reports/{report_id}")
 async def delete_report(report_id: str):
@@ -45,7 +43,6 @@ async def delete_report(report_id: str):
             detail=f"Failed to delete report: {str(e)}"
         )
 
-
 @router.put("/reports/{report_id}")
 async def update_report(report_id: str, payload: ReportUpdateRequest):
     try:
@@ -65,25 +62,34 @@ async def update_report(report_id: str, payload: ReportUpdateRequest):
             detail=f"Failed to update report: {str(e)}"
         )
 
-
 @router.post("/upload-report", status_code=status.HTTP_201_CREATED)
 async def upload_report(file: UploadFile = File(...)):
-    if not file.filename.endswith(".pdf") and not file.content_type.startswith("image/"):
+    filename = file.filename.lower() if file.filename else ""
+    content_type = file.content_type or ""
+
+    # PDFおよび主要な画像形式を許可
+    is_pdf = filename.endswith(".pdf") or content_type == "application/pdf"
+    is_image = content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp"))
+
+    if not is_pdf and not is_image:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="PDFまたは画像形式のファイルのみ対応しています。",
         )
 
     try:
-        pdf_content = await file.read()
+        file_content = await file.read()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"ファイルの読み込みに失敗しました: {str(e)}",
         )
 
+    # 適切な MimeType を決定して解析に渡す
+    actual_content_type = "application/pdf" if is_pdf else content_type
+
     try:
-        extracted_data = await analyze_report_image(pdf_content, file.content_type)
+        extracted_data = await analyze_report_image(file_content, actual_content_type)
     except RuntimeError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -112,4 +118,4 @@ async def upload_report(file: UploadFile = File(...)):
         "filename": file.filename,
         "extracted_data": extracted_data,
     }
-    
+
