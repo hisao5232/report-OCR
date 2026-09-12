@@ -21,6 +21,8 @@ export default function Home() {
     }
   };
 
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) return;
@@ -33,13 +35,11 @@ export default function Home() {
     formData.append("file", file);
 
     try {
-      const response = await fetch(
-        "https://ocr-backend-288651941478.asia-northeast1.run.app/upload-report",
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
+      // 環境変数を使用してエンドポイントを指定
+      const response = await fetch(`${API_BASE_URL}/upload-report`, {
+        method: "POST",
+        body: formData,
+      });
 
       if (!response.ok) {
         throw new Error(`サーバーエラー: ${response.status}`);
@@ -47,7 +47,7 @@ export default function Home() {
 
       const data: OcrAcceptedResponse = await response.json();
       setResult(data);
-      setFile(null); // ファイル選択をリセット
+      setFile(null);
     } catch (err: unknown) {
       if (err instanceof Error) {
         setError(err.message);

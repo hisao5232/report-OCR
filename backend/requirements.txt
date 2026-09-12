@@ -2,5 +2,7 @@ fastapi
 uvicorn
 google-cloud-firestore
 google-genai
+google-cloud-storage
+google-cloud-tasks
 pydantic
 python-multipart

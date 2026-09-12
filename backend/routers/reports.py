@@ -1,7 +1,7 @@
 import uuid
 import traceback
-import asyncio
-from fastapi import APIRouter, File, HTTPException, UploadFile, status, BackgroundTasks
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from schemas import ReportUpdateRequest
 from services.firestore import (
     fetch_all_reports,
@@ -10,47 +10,17 @@ from services.firestore import (
     update_report_by_id,
 )
 from services.gemini import analyze_report_image
+from services.storage import upload_file_to_gcs, download_file_from_gcs
+from services.cloud_tasks import enqueue_ocr_task
 
 router = APIRouter()
 
 
-def process_report_task(
-    document_id: str,
-    filename: str,
-    file_content: bytes,
-    actual_content_type: str
-):
-    """
-    バックグラウンドでGemini解析を実行し、結果（成功・失敗）をFirestoreに更新・保存する。
-    ※ BackgroundTasks でイベントループをブロックしないよう、async def ではなく def (同期関数) で定義。
-    """
-    try:
-        # 非同期関数 analyze_report_image を別スレッド上のイベントループで実行
-        extracted_data = asyncio.run(
-            analyze_report_image(file_content, actual_content_type)
-        )
-        
-        # 解析成功：ステータスを completed に更新して抽出データを保存
-        save_report(
-            document_id=document_id,
-            filename=filename,
-            extracted_data=extracted_data,
-            status="completed"
-        )
-        print(f"[BackgroundTask] Report {document_id} processed successfully.")
-
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"[BackgroundTask] Processing Error ({document_id}):\n{error_trace}")
-        
-        # 解析失敗：ステータスを failed に更新し、エラーメッセージを保存
-        save_report(
-            document_id=document_id,
-            filename=filename,
-            extracted_data=None,
-            status="failed",
-            error_message=str(e)
-        )
+class TaskPayload(BaseModel):
+    document_id: str
+    blob_path: str
+    filename: str
+    content_type: str
 
 
 @router.get("/reports")
@@ -107,10 +77,7 @@ async def update_report(document_id: str, payload: ReportUpdateRequest):
 
 
 @router.post("/upload-report", status_code=status.HTTP_202_ACCEPTED)
-async def upload_report(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
-):
+async def upload_report(file: UploadFile = File(...)):
     filename = file.filename.lower() if file.filename else ""
     content_type = file.content_type or ""
 
@@ -131,13 +98,20 @@ async def upload_report(
             detail=f"ファイルの読み込みに失敗しました: {str(e)}",
         )
 
-    # 適切な MimeType を決定
     actual_content_type = "application/pdf" if is_pdf else content_type
-
-    # 1. 事前にドキュメントIDを発行
     document_id = str(uuid.uuid4())
 
-    # 2. Firestoreへ「processing（処理中）」状態で初期保存
+    # 1. GCS へファイルを保存
+    try:
+        blob_path = upload_file_to_gcs(document_id, file_content, actual_content_type)
+    except Exception as e:
+        print(f"GCS Upload Error:\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"ストレージへの保存に失敗しました: {str(e)}"
+        )
+
+    # 2. Firestore へ初期ステータス（processing）を保存
     try:
         save_report(
             document_id=document_id,
@@ -149,22 +123,78 @@ async def upload_report(
         print(f"Firestore Save Initial State Error:\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Firestore保存エラー: {str(e)}"
+            detail=f"Firestore初期保存エラー: {str(e)}"
         )
 
-    # 3. バックグラウンドタスクにタスクを追加（レスポンス返却後に別スレッドで実行）
-    background_tasks.add_task(
-        process_report_task,
-        document_id,
-        file.filename,
-        file_content,
-        actual_content_type
-    )
+    # 3. Cloud Tasks へタスクをキューイング
+    try:
+        enqueue_ocr_task(
+            document_id=document_id,
+            blob_path=blob_path,
+            filename=file.filename,
+            content_type=actual_content_type
+        )
+    except Exception as e:
+        print(f"Cloud Tasks Enqueue Error:\n{traceback.format_exc()}")
+        # タスクキューイング失敗時は Firestore を failed に更新しておく
+        save_report(
+            document_id=document_id,
+            filename=file.filename,
+            extracted_data=None,
+            status="failed",
+            error_message=f"タスクの追加に失敗しました: {str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"キューへの追加に失敗しました: {str(e)}"
+        )
 
-    # 4. ブラウザには即座に受付完了を返す
+    # 4. ブラウザには即座に受付完了を返却
     return {
         "status": "accepted",
         "document_id": document_id,
         "filename": file.filename,
-        "message": "ファイルを受け付けました。バックグラウンドで解析を実行します。"
+        "message": "ファイルを受け付けました。Cloud Tasks経由で非同期に解析します。"
     }
+
+
+@router.post("/tasks/process-ocr")
+async def process_ocr_task(payload: TaskPayload):
+    """
+    Cloud Tasks から呼び出されるワーカーエンドポイント。
+    GCS からデータを取得し、Gemini で解析して Firestore に結果を反映する。
+    """
+    document_id = payload.document_id
+    try:
+        # GCS からファイルデータを取得
+        file_bytes = download_file_from_gcs(payload.blob_path)
+
+        # Gemini API 解析実行
+        extracted_data = await analyze_report_image(file_bytes, payload.content_type)
+
+        # 解析成功：Firestore 更新
+        save_report(
+            document_id=document_id,
+            filename=payload.filename,
+            extracted_data=extracted_data,
+            status="completed"
+        )
+        print(f"[CloudTasks Worker] Report {document_id} processed successfully.")
+        return {"status": "success", "document_id": document_id}
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        print(f"[CloudTasks Worker] Error ({document_id}):\n{error_trace}")
+
+        save_report(
+            document_id=document_id,
+            filename=payload.filename,
+            extracted_data=None,
+            status="failed",
+            error_message=str(e)
+        )
+        # 500を返すと Cloud Tasks が自動再試行（リトライ）するため、適宜例外をスロー
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Task processing failed: {str(e)}"
+        )
