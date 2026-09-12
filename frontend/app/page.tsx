@@ -31,18 +31,26 @@ export default function Home() {
     setError(null);
     setResult(null);
 
+    const targetUrl = `${API_BASE_URL}/upload-report`;
+
+    // 環境変数が設定されていない（undefined）場合は即座にエラー表示
+    if (!API_BASE_URL) {
+      setError(`【環境変数エラー】NEXT_PUBLIC_API_BASE_URL が未設定です。(Value: ${API_BASE_URL})`);
+      setLoading(false);
+      return;
+    }
+
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      // 環境変数を使用してエンドポイントを指定
-      const response = await fetch(`${API_BASE_URL}/upload-report`, {
+      const response = await fetch(targetUrl, {
         method: "POST",
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error(`サーバーエラー: ${response.status}`);
+        throw new Error(`サーバーエラー: ${response.status} (Target: ${targetUrl})`);
       }
 
       const data: OcrAcceptedResponse = await response.json();
@@ -50,9 +58,10 @@ export default function Home() {
       setFile(null);
     } catch (err: unknown) {
       if (err instanceof Error) {
-        setError(err.message);
+        // フェッチエラー発生時に送信先 URL を画面上に表示させる
+        setError(`【フェッチエラー】${err.message} | 送信先: ${targetUrl}`);
       } else {
-        setError("アップロードに失敗しました。");
+        setError(`アップロードに失敗しました。 | 送信先: ${targetUrl}`);
       }
     } finally {
       setLoading(false);
@@ -72,7 +81,6 @@ export default function Home() {
               Gemini 2.5 Flash を使用した高精度レポート解析システム
             </p>
           </div>
-
           <div className="flex items-center gap-2">
             <Link
               href="/search"
@@ -96,7 +104,7 @@ export default function Home() {
         >
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
-              解析する PDF または画像ファイルを選択
+              解析する PDF または 画像ファイルを選択
             </label>
             <input
               type="file"
@@ -114,9 +122,9 @@ export default function Home() {
           </button>
         </form>
 
-        {/* エラー表示 */}
+        {/* エラー表示（画面上で URL をデバッグ） */}
         {error && (
-          <div className="p-4 bg-red-50 text-red-700 rounded-md border border-red-200 font-medium">
+          <div className="p-4 bg-red-50 text-red-700 rounded-md border border-red-200 font-medium break-all">
             {error}
           </div>
         )}
@@ -125,7 +133,7 @@ export default function Home() {
         {result && (
           <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-lg space-y-4 text-emerald-900">
             <div className="flex items-center gap-2 font-bold text-lg text-emerald-800">
-              <span>✅</span>
+              <span>✅ </span>
               <span>アップロードを受け付けました</span>
             </div>
             <p className="text-sm">
@@ -133,7 +141,7 @@ export default function Home() {
             </p>
             <div className="pt-2 flex items-center justify-between border-t border-emerald-200">
               <span className="text-xs font-mono text-emerald-700">
-                ドキュメントID: {result.document_id}
+                ドキュメント ID: {result.document_id}
               </span>
               <Link
                 href="/reports"
